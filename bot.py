@@ -6,14 +6,16 @@ import requests
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-DEX_API = "https://api.dexscreener.com/latest/dex/search?q=BSC"
+DEX_API = "https://api.dexscreener.com/latest/dex/search?q=bsc"
 
-CHECK_INTERVAL = 300  # 5 minutes
-MIN_VOLUME_5M = 100000   # 100k$
-MIN_LIQUIDITY = 50000    # 50k$
-MIN_PRICE_CHANGE = 8     # %
+SCAN_INTERVAL = 60  # seconds
 
-sent_tokens = set()
+# Filters (Pre-Pump)
+MIN_LIQUIDITY = 20000        # $
+MIN_VOLUME_5M = 15000        # $
+MIN_PRICE_CHANGE_5M = 5      # %
+
+sent_pairs = set()
 
 # ================== TELEGRAM ==================
 def send_alert(message):
@@ -25,22 +27,27 @@ def send_alert(message):
     payload = {
         "chat_id": CHAT_ID,
         "text": message,
-        "parse_mode": "HTML"
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True
     }
-    requests.post(url, json=payload)
 
-# ================== DEXSCREENER ==================
+    try:
+        r = requests.post(url, json=payload, timeout=10)
+        print("📩 Telegram:", r.status_code)
+    except Exception as e:
+        print("Telegram error:", e)
+
+# ================== DATA ==================
 def fetch_pairs():
     try:
         r = requests.get(DEX_API, timeout=15)
-        data = r.json()
-        return data.get("pairs", [])
+        return r.json().get("pairs", [])
     except Exception as e:
-        print("Dex error:", e)
+        print("API error:", e)
         return []
 
 # ================== SCANNER ==================
-def scan():
+def scan_market():
     pairs = fetch_pairs()
 
     for p in pairs:
@@ -48,45 +55,59 @@ def scan():
             if p.get("chainId") != "bsc":
                 continue
 
-            token = p["baseToken"]["symbol"]
-            pair_address = p["pairAddress"]
-
-            if pair_address in sent_tokens:
+            pair_address = p.get("pairAddress")
+            if not pair_address or pair_address in sent_pairs:
                 continue
 
-            price_change = p["priceChange"]["m5"]
-            volume = p["volume"]["m5"]
-            liquidity = p["liquidity"]["usd"]
+            base = p.get("baseToken", {})
+            token_name = base.get("name", "Unknown")
+            token_symbol = base.get("symbol", "N/A")
+
+            price_change_5m = p.get("priceChange", {}).get("m5", 0)
+            volume_5m = p.get("volume", {}).get("m5", 0)
+            liquidity = p.get("liquidity", {}).get("usd", 0)
+            dex = p.get("dexId", "DEX")
 
             if (
-                price_change >= MIN_PRICE_CHANGE
-                and volume >= MIN_VOLUME_5M
-                and liquidity >= MIN_LIQUIDITY
+                liquidity >= MIN_LIQUIDITY
+                and volume_5m >= MIN_VOLUME_5M
+                and price_change_5m >= MIN_PRICE_CHANGE_5M
             ):
-                msg = f"""
-🚨 <b>Early Alpha Alert</b>
+                message = f"""
+🚨 <b>Pre-Pump Alpha Alert</b>
 
-🪙 <b>Token:</b> {token}
+🪙 <b>Token:</b> {token_name} ({token_symbol})
 🌐 <b>Network:</b> BSC
-💧 <b>Liquidity:</b> ${liquidity:,.0f}
-📊 <b>Volume (5m):</b> ${volume:,.0f}
-📈 <b>Price Change (5m):</b> +{price_change}%
+🏦 <b>DEX:</b> {dex}
 
-⚠️ <i>Early movement detected</i>
-📡 Monitoring for confirmation...
+💧 <b>Liquidity:</b> ${liquidity:,.0f}
+📊 <b>Volume (5m):</b> ${volume_5m:,.0f}
+📈 <b>Price Change (5m):</b> +{price_change_5m}%
+
+⚠️ <i>Early movement detected – No recommendation yet</i>
+🧠 <i>راقب السلوك قبل الانفجار</i>
 """
-                send_alert(msg)
-                sent_tokens.add(pair_address)
+                send_alert(message)
+                sent_pairs.add(pair_address)
 
         except Exception as e:
             print("Scan error:", e)
 
 # ================== MAIN ==================
 def main():
-    send_alert("🚀 <b>SmartScannerLY</b> started\n🕵️‍♂️ BSC Early Alpha Scanner ACTIVE")
+    print("🚀 SmartScannerLY started")
+
+    send_alert(
+        "🚀 <b>SmartScannerLY Bot is LIVE</b>\n\n"
+        "🌐 Network: BSC\n"
+        "🧠 Mode: Pre-Pump Alpha Scanner\n"
+        "⏱ Timeframes: 5m / 15m\n"
+        "⚠️ Alerts: Early Detection (No Signals)"
+    )
+
     while True:
-        scan()
-        time.sleep(CHECK_INTERVAL)
+        scan_market()
+        time.sleep(SCAN_INTERVAL)
 
 if __name__ == "__main__":
     main()
