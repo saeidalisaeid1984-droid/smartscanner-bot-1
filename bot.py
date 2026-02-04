@@ -14,7 +14,7 @@ def send_alert(message):
     requests.post(url, json=payload)
 
 def main():
-    send_alert("🚀 SmartScannerLY Bot is running\n📡 BSC Early Alert system active")
+    send_alert("🚀 SmartScannerLY Bot is running\n🕊 BSC Early Alert system active")
     while True:
         time.sleep(60)
 
