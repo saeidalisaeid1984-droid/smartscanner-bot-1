@@ -1,22 +1,26 @@
 import requests
 import time
+from datetime import datetime, timezone
 
-# ==============================
+# =========================
 # CONFIG
-# ==============================
+# =========================
 BOT_TOKEN = "8415018020:AAFXXLuwjWzCmAVm6IjkYb3a27JDx-Yerkc"
 CHAT_ID = "5837332461"
 
 DEX_API = "https://api.dexscreener.com/latest/dex/pairs/bsc"
+BINANCE_SYMBOLS_API = "https://api.binance.com/api/v3/exchangeInfo"
 
-MIN_LIQUIDITY = 20000
 CHECK_INTERVAL = 30  # seconds
+MIN_LIQUIDITY = 20000
+SCORE_THRESHOLD = 75
 
-seen_tokens = set()
+seen_pairs = set()
+binance_symbols = set()
 
-# ==============================
+# =========================
 # TELEGRAM
-# ==============================
+# =========================
 def send(msg):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {
@@ -27,9 +31,25 @@ def send(msg):
     }
     requests.post(url, json=payload, timeout=10)
 
-# ==============================
-# FETCH DATA
-# ==============================
+# =========================
+# BINANCE
+# =========================
+def load_binance_symbols():
+    global binance_symbols
+    try:
+        r = requests.get(BINANCE_SYMBOLS_API, timeout=15)
+        data = r.json()
+        for s in data.get("symbols", []):
+            binance_symbols.add(s["baseAsset"])
+    except:
+        pass
+
+def on_binance(symbol):
+    return symbol.upper() in binance_symbols
+
+# =========================
+# DEX
+# =========================
 def fetch_pairs():
     try:
         r = requests.get(DEX_API, timeout=15)
@@ -37,88 +57,91 @@ def fetch_pairs():
     except:
         return []
 
-# ==============================
-# SCORE SYSTEM
-# ==============================
-def calculate_score(pair):
+# =========================
+# SCORE
+# =========================
+def score_pair(pair):
     score = 0
+    liq = pair.get("liquidity", {}).get("usd", 0)
+    vol5 = pair.get("volume", {}).get("m5", 0)
+    vol15 = pair.get("volume", {}).get("m15", 0)
+    pc5 = pair.get("priceChange", {}).get("m5", 0)
 
-    liquidity = pair.get("liquidity", {}).get("usd", 0)
-    volume5m = pair.get("volume", {}).get("m5", 0)
-    price_change = pair.get("priceChange", {}).get("m5", 0)
-    created_at = pair.get("pairCreatedAt", 0)
+    if liq >= 50000: score += 30
+    elif liq >= 20000: score += 20
 
-    # Liquidity
-    if liquidity >= 50000:
-        score += 30
-    elif liquidity >= 20000:
-        score += 20
+    if vol5 >= 50000: score += 25
+    elif vol5 >= 20000: score += 15
 
-    # Volume
-    if volume5m >= 50000:
-        score += 30
-    elif volume5m >= 20000:
-        score += 20
+    if vol15 >= 80000: score += 10
 
-    # Price movement (healthy)
-    if 3 <= price_change <= 15:
-        score += 20
-
-    # New pair bonus
-    if created_at:
-        score += 20
+    if 2 <= pc5 <= 12: score += 20
 
     return score
 
-# ==============================
+# =========================
 # ANALYZE
-# ==============================
+# =========================
 def analyze(pair):
     try:
-        token = pair["baseToken"]["symbol"]
+        base = pair["baseToken"]["symbol"]
         address = pair["pairAddress"]
-        liquidity = pair["liquidity"]["usd"]
-        volume5m = pair["volume"]["m5"]
-        price_change = pair["priceChange"]["m5"]
-        price = pair["priceUsd"]
 
-        if liquidity < MIN_LIQUIDITY:
+        if address in seen_pairs:
             return
 
-        score = calculate_score(pair)
+        liq = pair["liquidity"]["usd"]
+        if liq < MIN_LIQUIDITY:
+            return
 
-        key = f"SCORE-{address}"
-        if score >= 75 and key not in seen_tokens:
-            seen_tokens.add(key)
+        score = score_pair(pair)
+        if score < SCORE_THRESHOLD:
+            return
 
-            send(
-                f"🟡 <b>إنذار مبكر (Alpha)</b>\n"
-                f"━━━━━━━━━━━━━━\n"
-                f"🪙 <b>التوكن:</b> {token}\n"
-                f"🌐 الشبكة: BSC\n"
-                f"🧠 التقييم: <b>{score}/100</b>\n"
-                f"💧 السيولة: ${liquidity:,.0f}\n"
-                f"📊 الفوليوم (5د): ${volume5m:,.0f}\n"
-                f"📈 التغير السعري: +{price_change}%\n"
-                f"💲 السعر: ${price}\n"
-                f"⚠️ <i>مراقبة فقط – لا دخول بعد</i>"
-            )
+        seen_pairs.add(address)
 
+        price = pair.get("priceUsd", "N/A")
+        vol5 = pair.get("volume", {}).get("m5", 0)
+        vol15 = pair.get("volume", {}).get("m15", 0)
+        pc5 = pair.get("priceChange", {}).get("m5", 0)
+
+        now_utc = datetime.now(timezone.utc)
+        now_txt = now_utc.strftime("%Y-%m-%d %H:%M UTC")
+
+        binance_status = "✔️ مدرجة في Binance" if on_binance(base) else "❌ غير مدرجة في Binance"
+
+        send(
+            f"🤖 <b>SmartScannerLY v1.0</b>\n"
+            f"🟡 <b>إنذار مبكر – قبل الانفجار</b>\n"
+            f"━━━━━━━━━━━━━━\n"
+            f"🪙 العملة: <b>{base}</b>\n"
+            f"🌐 الشبكة: BSC\n"
+            f"🏪 المنصات:\n"
+            f"• DexScreener\n"
+            f"• {binance_status}\n"
+            f"━━━━━━━━━━━━━━\n"
+            f"💧 السيولة: ${liq:,.0f}\n"
+            f"📊 الفوليوم 5د: ${vol5:,.0f}\n"
+            f"📊 الفوليوم 15د: ${vol15:,.0f}\n"
+            f"📈 التغير 5د: +{pc5}%\n"
+            f"💲 السعر: ${price}\n"
+            f"━━━━━━━━━━━━━━\n"
+            f"🧠 التقييم: <b>{score}/100</b>\n"
+            f"🕒 وقت الإشارة: {now_txt}\n"
+            f"⚠️ <i>مراقبة فقط – القرار عليك</i>"
+        )
     except:
         return
 
-# ==============================
-# MAIN LOOP
-# ==============================
+# =========================
+# MAIN
+# =========================
 def run():
-    send("🚀 <b>بوت Alpha Scanner شغّال</b>\n📡 BSC | إنذارات ذكية فقط")
+    load_binance_symbols()
+    send("🚀 <b>SmartScannerLY v1.0 شغّال</b>\n📡 BSC | Pre-Pump Alpha فقط")
     while True:
-        pairs = fetch_pairs()
-        for pair in pairs:
-            analyze(pair)
+        for p in fetch_pairs():
+            analyze(p)
         time.sleep(CHECK_INTERVAL)
 
-# ==============================
-# START
-# ==============================
 run()
