@@ -1,146 +1,145 @@
 # ==============================
-# SmartScannerLY - Core Config
+# SmartScannerLY – Core v1.1 (AR)
 # ==============================
 
 BOT_TOKEN = "8415018020:AAFXXLuwjWzCmAVm6IjkYb3a27JDx-Yerkc"
 CHAT_ID = "5837332461"
 
-# --- General Settings ---
-CHECK_INTERVAL_SECONDS = 180        # Binance check every 3 minutes
+CHECK_INTERVAL_SECONDS = 180
 WHALE_SCORE_THRESHOLD = 75
 COOLDOWN_HOURS = 6
+MIN_WHALE_USDT = 500_000
 
-# --- Excluded Major Coins ---
 EXCLUDED_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
-
-# --- Whale Trade Threshold ---
-MIN_WHALE_USDT = 500_000             # 500k USDT
-
-# ==============================
-# Imports
-# ==============================
 
 import requests
 import time
 from datetime import datetime, timedelta
 
-# ==============================
-# Global Memory (Anti-Spam)
-# ==============================
-
 last_alert_time = {}
 
 # ==============================
-# Telegram Alert System
+# Telegram
 # ==============================
 
-def send_telegram(message):
+def send_telegram(msg):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {
+    data = {
         "chat_id": CHAT_ID,
-        "text": message,
+        "text": msg,
         "parse_mode": "HTML",
         "disable_web_page_preview": True
     }
-    requests.post(url, json=payload)
+    requests.post(url, json=data)
 
 # ==============================
-# Binance Data Fetchers
+# Binance API
 # ==============================
 
 def get_usdt_pairs():
     url = "https://api.binance.com/api/v3/exchangeInfo"
     data = requests.get(url, timeout=10).json()
-    pairs = []
+    return [
+        s["symbol"] for s in data["symbols"]
+        if s["quoteAsset"] == "USDT"
+        and s["status"] == "TRADING"
+        and s["symbol"] not in EXCLUDED_SYMBOLS
+    ]
 
-    for s in data["symbols"]:
-        if s["quoteAsset"] == "USDT" and s["status"] == "TRADING":
-            symbol = s["symbol"]
-            if symbol not in EXCLUDED_SYMBOLS:
-                pairs.append(symbol)
-    return pairs
-
-def get_recent_trades(symbol):
+def get_trades(symbol):
     url = f"https://api.binance.com/api/v3/trades?symbol={symbol}&limit=50"
     return requests.get(url, timeout=10).json()
 
-def get_klines(symbol, interval="5m", limit=20):
+def get_klines(symbol, interval="15m", limit=20):
     url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
     return requests.get(url, timeout=10).json()
 
 # ==============================
-# Whale Detection Logic
+# Whale Detection + Trade Plan
 # ==============================
 
-def detect_whale(symbol):
-    trades = get_recent_trades(symbol)
-    whale_trade = None
+def analyze_symbol(symbol):
+    trades = get_trades(symbol)
+    whale_value = None
 
     for t in trades:
-        trade_value = float(t["price"]) * float(t["qty"])
-        if trade_value >= MIN_WHALE_USDT:
-            whale_trade = trade_value
+        value = float(t["price"]) * float(t["qty"])
+        if value >= MIN_WHALE_USDT:
+            whale_value = value
             break
 
-    if not whale_trade:
+    if not whale_value:
         return None
 
     klines = get_klines(symbol)
+    highs = [float(k[2]) for k in klines]
+    lows = [float(k[3]) for k in klines]
     closes = [float(k[4]) for k in klines]
     volumes = [float(k[5]) for k in klines]
 
-    avg_volume = sum(volumes[:-1]) / len(volumes[:-1])
-    current_volume = volumes[-1]
+    avg_vol = sum(volumes[:-1]) / len(volumes[:-1])
+    cur_vol = volumes[-1]
 
     score = 0
-    if whale_trade >= MIN_WHALE_USDT:
+    if whale_value >= MIN_WHALE_USDT:
         score += 30
-    if current_volume >= avg_volume * 3:
+    if cur_vol >= avg_vol * 3:
         score += 25
-    if closes[-1] > max(closes[:-1]):
+    if closes[-1] > max(highs[:-1]):
         score += 20
 
-    if score >= WHALE_SCORE_THRESHOLD:
-        return {
-            "symbol": symbol,
-            "trade_value": int(whale_trade),
-            "score": score
-        }
+    if score < WHALE_SCORE_THRESHOLD:
+        return None
 
-    return None
+    entry_low = lows[-1]
+    entry_high = closes[-1]
+    tp1 = entry_high * 1.03
+    tp2 = entry_high * 1.08
+    stop = entry_low * 0.97
+
+    return {
+        "symbol": symbol,
+        "whale": int(whale_value),
+        "score": score,
+        "entry": (round(entry_low, 6), round(entry_high, 6)),
+        "tp1": round(tp1, 6),
+        "tp2": round(tp2, 6),
+        "stop": round(stop, 6)
+    }
 
 # ==============================
-# Cooldown Check
+# Cooldown
 # ==============================
 
-def allowed_to_alert(symbol):
+def can_alert(symbol):
     now = datetime.utcnow()
     last = last_alert_time.get(symbol)
-
     if not last:
         return True
-
     return now - last >= timedelta(hours=COOLDOWN_HOURS)
 
 # ==============================
-# Alert Builder
+# Message Builder (Arabic)
 # ==============================
 
-def build_message(data):
-    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
-
+def build_message(d):
+    t = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
     return f"""
-🐋 <b>Binance Whale Alert</b>
+🐋 <b>تنبيه حوت – بينانس (فوري)</b>
 
-🪙 <b>Pair:</b> {data['symbol']}
-🏦 <b>Market:</b> Binance Spot
-💰 <b>Whale Trade:</b> {data['trade_value']:,} USDT
-📊 <b>Whale Score:</b> {data['score']} / 100
+🪙 <b>الزوج:</b> {d['symbol']}
+💰 <b>صفقة حوت:</b> {d['whale']:,} USDT
+📊 <b>قوة الإشارة:</b> {d['score']} / 100
 
-🎯 <b>Signal Type:</b> Smart Whale Momentum
-⏱ <b>Time:</b> {now}
+🎯 <b>خطة تداول ذكية (اختيارية)</b>
+• الدخول: {d['entry'][0]} – {d['entry'][1]}
+• الهدف 1: {d['tp1']}
+• الهدف 2: {d['tp2']}
+• إيقاف الخسارة: {d['stop']}
+• المخاطرة: متوسطة
 
-🕊 <i>Automated signal – not financial advice</i>
+⏱ <b>الوقت:</b> {t}
+🕊 <i>تنبيه آلي – ليس توصية مالية</i>
 """
 
 # ==============================
@@ -148,30 +147,24 @@ def build_message(data):
 # ==============================
 
 def main():
-    send_telegram("🚀 SmartScannerLY Core v1.0 is LIVE\n🐋 Binance Whale Engine Activated")
-
+    send_telegram("🚀 SmartScannerLY شغّال الآن\n🐋 نظام رصد الحيتان مفعّل")
     pairs = get_usdt_pairs()
 
     while True:
-        for symbol in pairs:
+        for sym in pairs:
             try:
-                if not allowed_to_alert(symbol):
+                if not can_alert(sym):
                     continue
 
-                result = detect_whale(symbol)
-                if result:
-                    message = build_message(result)
-                    send_telegram(message)
-                    last_alert_time[symbol] = datetime.utcnow()
+                data = analyze_symbol(sym)
+                if data:
+                    send_telegram(build_message(data))
+                    last_alert_time[sym] = datetime.utcnow()
 
-            except Exception as e:
+            except:
                 pass
 
         time.sleep(CHECK_INTERVAL_SECONDS)
-
-# ==============================
-# Run
-# ==============================
 
 if __name__ == "__main__":
     main()
